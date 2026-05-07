@@ -22,8 +22,7 @@ def set_seeds(seed):
 def main():
     set_seeds(seed)
     os.makedirs("artifacts/models", exist_ok=True)
-
-    run_training(total_timesteps=300_000, seed=seed)
+    run_training(seed=seed)
     run_evaluation()
 
 

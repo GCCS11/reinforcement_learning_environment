@@ -6,12 +6,10 @@ transaction_cost = 0.00125
 
 
 def btc_buy_and_hold(df):
-
     entry_price  = float(df.iloc[0]["open"])
     equity_curve = df["close"] / entry_price
     equity_curve = pd.Series(equity_curve.values, index=pd.to_datetime(df["date"].values))
 
-    # apply transaction costs only at entry and exit
     equity_curve = equity_curve * (1.0 - transaction_cost)
     equity_curve.iloc[-1] *= (1.0 - transaction_cost)
 
@@ -22,12 +20,14 @@ def btc_buy_and_hold(df):
 
 
 def sp500_buy_and_hold(start_date, end_date):
-
     hist = yf.download("SPY", start=str(start_date)[:10], end=str(end_date)[:10],
                        interval="1d", progress=False, auto_adjust=True)
 
     if hist.empty:
         return None, None
+
+    if isinstance(hist.columns, pd.MultiIndex):
+        hist.columns = hist.columns.get_level_values(0)
 
     hist.index = pd.to_datetime(hist.index).tz_localize(None)
 
