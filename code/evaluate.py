@@ -27,7 +27,6 @@ def load_and_prepare():
 
 
 def run_model_on_test(model, df):
-
     env = BTCTradingEnv(df, episode_length=len(df) - 50)
     env.reset(seed=0)
     env.current_step = 0
@@ -67,7 +66,6 @@ def run_model_on_test(model, df):
 
         done = terminated or truncated
 
-    # build hourly equity curve
     date_index   = pd.to_datetime(df["date"].values)
     equity_curve = pd.Series(np.nan, index=date_index)
     equity_curve.iloc[0] = 1.0
@@ -82,11 +80,11 @@ def run_model_on_test(model, df):
 
 
 def compute_metrics(equity_curve, trade_log, n_hours):
-    log_returns      = np.log(equity_curve / equity_curve.shift(1)).dropna()
-    total_return     = float(equity_curve.iloc[-1] - 1.0)
-    annualized_return= float((1.0 + total_return) ** (8760.0 / n_hours) - 1.0)
-    annualized_vol   = float(log_returns.std() * np.sqrt(8760))
-    sharpe           = annualized_return / annualized_vol if annualized_vol > 0 else 0.0
+    log_returns       = np.log(equity_curve / equity_curve.shift(1)).dropna()
+    total_return      = float(equity_curve.iloc[-1] - 1.0)
+    annualized_return = float((1.0 + total_return) ** (8760.0 / n_hours) - 1.0)
+    annualized_vol    = float(log_returns.std() * np.sqrt(8760))
+    sharpe            = annualized_return / annualized_vol if annualized_vol > 0 else 0.0
 
     neg_returns  = log_returns[log_returns < 0]
     downside_vol = float(neg_returns.std() * np.sqrt(8760)) if len(neg_returns) > 0 else 1e-9
@@ -108,17 +106,35 @@ def compute_metrics(equity_curve, trade_log, n_hours):
         turnover     = 0.0
 
     return {
-        "total_return":        total_return,
-        "annualized_return":   annualized_return,
-        "annualized_vol":      annualized_vol,
-        "sharpe":              sharpe,
-        "sortino":             sortino,
-        "max_drawdown":        max_drawdown,
-        "calmar":              calmar,
-        "hit_rate":            hit_rate,
-        "avg_duration_hours":  avg_duration,
-        "turnover":            turnover,
+        "total_return":       total_return,
+        "annualized_return":  annualized_return,
+        "annualized_vol":     annualized_vol,
+        "sharpe":             sharpe,
+        "sortino":            sortino,
+        "max_drawdown":       max_drawdown,
+        "calmar":             calmar,
+        "hit_rate":           hit_rate,
+        "avg_duration_hours": avg_duration,
+        "turnover":           turnover,
     }
+
+
+def compute_feature_analysis(train_df, fold_num):
+    from sklearn.feature_selection import mutual_info_regression
+
+    target   = train_df["log_return"].shift(-1).dropna()
+    features = train_df[feature_columns].iloc[:len(target)]
+
+    correlations = features.corrwith(target)
+    mi_scores    = mutual_info_regression(features, target, random_state=42)
+
+    result = pd.DataFrame({
+        "feature":     feature_columns,
+        "correlation": correlations.values,
+        "mutual_info": mi_scores,
+    })
+    result = result.sort_values("mutual_info", ascending=False).reset_index(drop=True)
+    result.to_csv(f"{output_dir}/feature_analysis_fold_{fold_num}.csv", index=False)
 
 
 def plot_equity_curve(strategy_curve, btc_curve, sp500_curve, fold_num, test_start, test_end):
@@ -148,9 +164,12 @@ def run_evaluation():
 
     for fold_config in folds:
         fold_num = fold_config["fold"]
+        print(f"evaluating fold {fold_num}...")
 
         train_df, val_df, test_df = get_fold_splits(df, fold_config)
         train_df, val_df, test_df, _, _ = normalize_features(train_df, val_df, test_df)
+
+        compute_feature_analysis(train_df, fold_num)
 
         model = PPO.load(f"{models_dir}/ppo_fold_{fold_num}")
 
@@ -160,16 +179,13 @@ def run_evaluation():
         metrics = compute_metrics(strategy_curve, trade_log, n_hours)
         metrics["fold"] = fold_num
 
-        #raw test_df
-        _, _, raw_test_df = get_fold_splits(
-            load_and_prepare(), fold_config
-        )
-        btc_curve, _ = btc_buy_and_hold(raw_test_df)
-        sp500_curve, _ = sp500_buy_and_hold(
+        _, _, raw_test_df = get_fold_splits(load_and_prepare(), fold_config)
+        btc_curve, _    = btc_buy_and_hold(raw_test_df)
+        sp500_curve, _  = sp500_buy_and_hold(
             fold_config["test_start"], fold_config["test_end"]
         )
 
-        btc_metrics = compute_metrics(btc_curve, [], n_hours)
+        btc_metrics   = compute_metrics(btc_curve, [], n_hours)
         btc_metrics["fold"] = fold_num
 
         sp500_metrics = {}
@@ -185,7 +201,6 @@ def run_evaluation():
             metrics["annualized_return"] - sp500_metrics.get("annualized_return", 0.0)
         )
 
-        # trade log
         if trade_log:
             trade_df = pd.DataFrame(trade_log)
             trade_df.to_csv(f"{output_dir}/trade_log_fold_{fold_num}.csv", index=False)
@@ -198,13 +213,13 @@ def run_evaluation():
         )
 
         all_metrics.append({"label": f"strategy_fold_{fold_num}", **metrics})
-        all_metrics.append({"label": f"btc_fold_{fold_num}", **btc_metrics})
+        all_metrics.append({"label": f"btc_fold_{fold_num}",      **btc_metrics})
         if sp500_metrics:
             all_metrics.append({"label": f"sp500_fold_{fold_num}", **sp500_metrics})
 
-    metrics_df = pd.DataFrame(all_metrics)
+        print(f"  trades={len(trade_log)}  sharpe={metrics['sharpe']:.3f}  return={metrics['total_return']:.3f}")
 
-    #strats
+    metrics_df    = pd.DataFrame(all_metrics)
     strategy_rows = metrics_df[metrics_df["label"].str.startswith("strategy")]
     numeric_cols  = strategy_rows.select_dtypes(include=np.number).columns
     summary_mean  = strategy_rows[numeric_cols].mean()
@@ -218,8 +233,8 @@ def run_evaluation():
          pd.DataFrame([summary_std])],
         ignore_index=True
     )
-
     metrics_df.to_csv(f"{output_dir}/metrics_summary.csv", index=False)
+    print("evaluation complete")
 
 
 if __name__ == "__main__":
